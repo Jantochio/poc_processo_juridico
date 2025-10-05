@@ -2,31 +2,36 @@ from datetime import date, timedelta
 import re
 import pandas as pd
 import streamlit as st
-from snowflake.snowpark.session import Session
+import snowflake.connector
 from string import Template
 
-# ---------- CONFIGURAÇÃO DO SNOWFLAKE ---------- #
+# ---------- CONEXÃO COM SNOWFLAKE ---------- #
 
-def create_snowflake_session():
-    return Session.builder.configs(st.secrets).create()
+def create_snowflake_connection():
+    return snowflake.connector.connect(
+        user=st.secrets["user"],
+        password=st.secrets["password"],
+        account=st.secrets["account"],
+        warehouse=st.secrets["warehouse"],
+        database=st.secrets["database"],
+        schema=st.secrets["schema"],
+        role=st.secrets["role"]
+    )
 
-session = create_snowflake_session()
+conn = create_snowflake_connection()
 
 # ---------- FUNÇÕES AUXILIARES ---------- #
 
 def calculate_deadline(days_text):
-    """Calcula a data correspondente ao número de dias úteis."""
     match = re.search(r"(\d+)\s*dias úteis", days_text, re.IGNORECASE)
     if match:
         num_days = int(match.group(1))
         today = date.today()
-        # Considerando dias corridos para simplificar
         deadline_date = today + timedelta(days=num_days)
         return deadline_date
     return None
 
 def extract_total_value(petition_text):
-    """Extrai o valor monetário total do texto."""
     petition_text = petition_text.replace(r"\$", "$")
     value_matches = re.findall(r"R\$ ?([\d.,]+)", petition_text)
     total = 0
@@ -35,24 +40,19 @@ def extract_total_value(petition_text):
         total += value_numeric
         if total > 0:
             break
-    return total  # Valor numérico
-    
+    return total
+
 def extract_information(petition_text):
-    """Extrai informações principais da petição."""
     author_match = re.search(r"Autor[a]?:\s*([^\n\r]+)", petition_text, re.IGNORECASE)
     author = author_match.group(1).strip() if author_match else "Não encontrado"
 
     deadline_match = re.search(r"(\d+)\s*dias úteis", petition_text, re.IGNORECASE)
-    if deadline_match:
-        deadline = calculate_deadline(deadline_match.group(0))  # Calcula a data
-    else:
-        deadline = None
+    deadline = calculate_deadline(deadline_match.group(0)) if deadline_match else None
 
     case_value = extract_total_value(petition_text)
 
     if "extravio de bagagens" in petition_text.lower():
         case_type = "Extravio de Bagagens"
-    # Verificar se "voo" e "atraso" estão na mesma linha (independente da ordem)
     elif any(("voo" in line and "atraso" in line) for line in petition_text.lower().splitlines()):
         case_type = "Indenização por atraso de voo"
     elif "danos morais" in petition_text.lower():
@@ -67,130 +67,104 @@ def extract_information(petition_text):
         "Prazo": str(deadline) if deadline else "Não encontrado",
         "Valor do Caso": case_value,
         "Tipo de Caso": case_type,
-        "Descricao": description or "Não encontrado", # Corrigido: 'Descrição' para 'Descricao'
+        "Descricao": description or "Não encontrado"
     }
 
 def generate_contestation(case_type, extracted_data):
-    """Gera a contestação com base no tipo de caso."""
     templates = {
-        "Extravio de Bagagens": """
+        "Extravio de Bagagens": """EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
 
-        Template:Extravio de Bagagens
-        
-        EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
+Processo nº: A SER DEFINIDO
 
-        Processo nº: A SER DEFINIDO
+Réu: EMPRESA AÉREA S.A.  
+Autor: ${Autor}  
 
-        Réu: EMPRESA AÉREA S.A.  
-        Autor: ${Autor}  
+***CONTESTAÇÃO***
 
-        ***CONTESTAÇÃO***
+1. **DOS FATOS**  
+${Descricao}  
 
-        1. **DOS FATOS**  
-        ${Descricao}  
+2. **DA FUNDAMENTAÇÃO JURÍDICA**  
+Requer a improcedência da ação inicial com fundamento na legislação aplicável.  
 
-        2. **DA FUNDAMENTAÇÃO JURÍDICA**  
-        Requer a improcedência da ação inicial com fundamento na legislação aplicável.  
+3. **DOS PEDIDOS**
+a) Improcedência da ação;  
+b) Custas processuais ao autor.  
 
-        3. **DOS PEDIDOS**
-        a) Improcedência da ação;  
-        b) Custas processuais ao autor.  
+Termos em que pede deferimento.""",
+        "Indenização por atraso de voo": """EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
 
-        Termos em que pede deferimento.
-        """,
-        "Indenização por atraso de voo": """
-        
-        Template:Indenização por atraso de voo
-        
-        EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
+Processo nº: A SER DEFINIDO
 
-        Processo nº: A SER DEFINIDO
+Réu: EMPRESA AÉREA S.A.  
+Autor: ${Autor}  
 
-        Réu: EMPRESA AÉREA S.A.  
-        Autor: ${Autor}  
+***CONTESTAÇÃO***
 
-        ***CONTESTAÇÃO***
+1. **DOS FATOS**  
+${Descricao}  
 
-        1. **DOS FATOS**  
-        ${Descricao}  
+2. **DA FUNDAMENTAÇÃO JURÍDICA**  
+Fundamentação baseada no argumento de ausência de responsabilidade pelo atraso.
 
-        2. **DA FUNDAMENTAÇÃO JURÍDICA**  
-        Fundamentação baseada no argumento de ausência de responsabilidade pelo atraso.
+3. **DOS PEDIDOS**
+a) Improcedência da ação;  
+b) Custas processuais ao autor.  
 
-        3. **DOS PEDIDOS**
-        a) Improcedência da ação;  
-        b) Custas processuais ao autor.  
+Termos em que pede deferimento.""",
+        "Indenização por Danos Morais": """EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
 
-        Termos em que pede deferimento.
-        """,
-        "Indenização por Danos Morais": """
+Processo nº: A SER DEFINIDO
 
-        Template:Indenização por Danos Morais
-        
-        EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
+Réu: EMPRESA AÉREA S.A.  
+Autor: ${Autor}  
 
-        Processo nº: A SER DEFINIDO
+***CONTESTAÇÃO***
 
-        Réu: EMPRESA AÉREA S.A.  
-        Autor: ${Autor}  
+1. **DOS FATOS**  
+${Descricao}  
 
-        ***CONTESTAÇÃO***
+2. **DA FUNDAMENTAÇÃO JURÍDICA**  
+Argumentação principal baseada na inexistência de danos morais.  
 
-        1. **DOS FATOS**  
-        ${Descricao}  
+3. **DOS PEDIDOS**
+a) Improcedência da ação;  
+b) Custas processuais ao autor.  
 
-        2. **DA FUNDAMENTAÇÃO JURÍDICA**  
-        Argumentação principal baseada na inexistência de danos morais.  
+Termos em que pede deferimento.""",
+        "Outros": """EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
 
-        3. **DOS PEDIDOS**
-        a) Improcedência da ação;  
-        b) Custas processuais ao autor.  
+Processo nº: A SER DEFINIDO
 
-        Termos em que pede deferimento.
-        """,
-        "Outros": """
+Réu: EMPRESA AÉREA S.A.  
+Autor: ${Autor}  
 
-        Template:Outros
-        
-        EXCELENTÍSSIMO(A) SENHOR(A) DOUTOR(A) JUIZ(A) DE DIREITO DA ___ VARA CÍVEL DA COMARCA DE ___.
+***CONTESTAÇÃO***
 
-        Processo nº: A SER DEFINIDO
+1. **DOS FATOS**  
+${Descricao}  
 
-        Réu: EMPRESA AÉREA S.A.  
-        Autor: ${Autor}  
+2. **DA FUNDAMENTAÇÃO JURÍDICA**  
+Fundamentação com base em análise do caso.  
 
-        ***CONTESTAÇÃO***
+3. **DOS PEDIDOS**
+a) Improcedência da ação;  
+b) Custas processuais ao autor.  
 
-        1. **DOS FATOS**  
-        ${Descricao}  
-
-        2. **DA FUNDAMENTAÇÃO JURÍDICA**  
-        Fundamentação com base em análise do caso.  
-
-        3. **DOS PEDIDOS**
-        a) Improcedência da ação;  
-        b) Custas processuais ao autor.  
-
-        Termos em que pede deferimento.
-        """
+Termos em que pede deferimento."""
     }
-    
-    # Obtém o template correto
-    template = Template(templates.get(case_type, templates["Outros"]))
 
-    # Substituir os placeholders no template. Passamos as chaves como argumentos nomeados.
+    template = Template(templates.get(case_type, templates["Outros"]))
     try:
         filled_template = template.substitute(
             Autor=extracted_data["Autor"],
-            Descricao=extracted_data["Descricao"] # Corrigido: 'Descrição' para 'Descricao'
+            Descricao=extracted_data["Descricao"]
         )
     except KeyError as e:
-        # Informa qual chave está faltando de forma mais clara
-        st.error(f"Erro: Placeholder ausente no dicionário para substituição - {e}. "
-                 "Verifique se as chaves 'Autor' e 'Descricao' existem nos dados extraídos.")
+        st.error(f"Erro: Placeholder ausente - {e}")
         raise
     except Exception as e:
-        st.error(f"Erro inesperado ao gerar a contestação: {e}")
+        st.error(f"Erro inesperado: {e}")
         raise
 
     return filled_template
@@ -199,15 +173,13 @@ def generate_contestation(case_type, extracted_data):
 
 st.title("Processador Jurídico:")
 
-# Inicializar variáveis no estado da sessão
 if "extracted_data" not in st.session_state:
-    st.session_state.extracted_data = None  # Dados extraídos
+    st.session_state.extracted_data = None
 if "contestation" not in st.session_state:
-    st.session_state.contestation = None  # Contestação gerada
+    st.session_state.contestation = None
 if "processed" not in st.session_state:
-    st.session_state.processed = False  # Flag para controlar exibição do botão "Salvar no Banco"
+    st.session_state.processed = False
 
-# Upload do arquivo da petição
 uploaded_file = st.file_uploader("Faça o upload da petição inicial (.txt)", type=["txt"])
 
 if uploaded_file:
@@ -218,7 +190,8 @@ if uploaded_file:
     if st.button("Processar Petição"):
         st.session_state.extracted_data = extract_information(petition_text)
         st.session_state.contestation = generate_contestation(
-            st.session_state.extracted_data["Tipo de Caso"], st.session_state.extracted_data
+            st.session_state.extracted_data["Tipo de Caso"],
+            st.session_state.extracted_data
         )
 
         st.subheader("Informações Extraídas")
@@ -227,10 +200,8 @@ if uploaded_file:
         st.subheader("Contestação Gerada:")
         st.text_area("Modelo", st.session_state.contestation, height=300)
 
-        # Marcar que a petição foi processada
         st.session_state.processed = True
 
-# Exibir o botão "Salvar no Banco de Dados" apenas após processar a petição
 if st.session_state.processed:
     if st.button("Salvar no Banco de Dados"):
         if st.session_state.extracted_data and st.session_state.contestation:
@@ -241,15 +212,26 @@ if st.session_state.processed:
                     "DEADLINE": st.session_state.extracted_data["Prazo"],
                     "CASE_VALUE": st.session_state.extracted_data["Valor do Caso"],
                     "CASE_TYPE": st.session_state.extracted_data["Tipo de Caso"],
-                    "CASE_DESCRIPTION": st.session_state.extracted_data["Descricao"], # Corrigido para 'Descricao'
+                    "CASE_DESCRIPTION": st.session_state.extracted_data["Descricao"],
                     "CONTESTATION_MODEL": st.session_state.contestation
                 }])
-                session.write_pandas(
-                    df=data_to_insert,
-                    table_name="PETITIONS",
-                    database="LEGAL_CASE_MANAGEMENT",
-                    schema="CONTESTATION_POC"
-                )
+
+                cursor = conn.cursor()
+                for _, row in data_to_insert.iterrows():
+                    cursor.execute("""
+                        INSERT INTO LEGAL_CASE_MANAGEMENT.CONTESTATION_POC.PETITIONS (
+                            RAW_TEXT, AUTHOR_NAME, DEADLINE, CASE_VALUE, CASE_TYPE, CASE_DESCRIPTION, CONTESTATION_MODEL
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    """, (
+                        row["RAW_TEXT"],
+                        row["AUTHOR_NAME"],
+                        row["DEADLINE"],
+                        row["CASE_VALUE"],
+                        row["CASE_TYPE"],
+                        row["CASE_DESCRIPTION"],
+                        row["CONTESTATION_MODEL"]
+                    ))
+                conn.commit()
                 st.success("Petição salva no banco com sucesso!")
             except Exception as e:
                 st.error(f"Erro ao salvar no banco: {str(e)}")
@@ -258,12 +240,9 @@ if st.session_state.processed:
 
 # ---------- CONSULTA AO BANCO DE DADOS ---------- #
 
-#st.header("Petições Processadas")
 try:
-    petitions = session.sql(
-        """
-        SELECT --CASE_ID AS ID_CASO,
-               AUTHOR_NAME AS AUTOR,
+    query = """
+        SELECT AUTHOR_NAME AS AUTOR,
                DEADLINE AS PRAZO,
                CASE_VALUE AS VALOR,
                CASE_TYPE AS TIPO_CASO,
@@ -272,8 +251,8 @@ try:
                RAW_TEXT AS DADOS_PETICAO,
                CONTESTATION_MODEL AS MODELO_GERADO
         FROM LEGAL_CASE_MANAGEMENT.CONTESTATION_POC.PETITIONS
-        """
-    ).to_pandas()
+    """
+    petitions = pd.read_sql(query, conn)
     st.subheader("Lista de Petições Processadas")
     st.dataframe(petitions)
 except Exception as e:
