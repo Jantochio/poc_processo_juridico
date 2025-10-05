@@ -2,12 +2,13 @@ from datetime import date, timedelta
 import re
 import pandas as pd
 import streamlit as st
-import snowflake.connector
+#import snowflake.connector
 from string import Template
 
 # ---------- CONEXÃO COM SNOWFLAKE ---------- #
 
 def create_snowflake_connection():
+    import snowflake.connector  # Import local, só executa quando a função é chamada
     return snowflake.connector.connect(
         user=st.secrets["user"],
         password=st.secrets["password"],
@@ -17,7 +18,6 @@ def create_snowflake_connection():
         schema=st.secrets["schema"],
         role=st.secrets["role"]
     )
-
 conn = create_snowflake_connection()
 
 # ---------- FUNÇÕES AUXILIARES ---------- #
@@ -257,3 +257,4 @@ try:
     st.dataframe(petitions)
 except Exception as e:
     st.error(f"Erro ao consultar dados no banco: {str(e)}")
+
